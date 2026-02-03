@@ -49,12 +49,13 @@ install(TARGETS ${library_name}
 # for the py script
 install(PROGRAMS
   scripts/simple_camera_publisher.py
+  scripts/logitec_c270_publisher.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 # In order to let ros2 find the folders
 install( 
-  DIRECTORY include src
+  DIRECTORY include launch src
   DESTINATION share/${PROJECT_NAME}
 )
 
