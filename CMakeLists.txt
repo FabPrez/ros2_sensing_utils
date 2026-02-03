@@ -46,12 +46,17 @@ install(TARGETS ${library_name}
   RUNTIME DESTINATION bin
 )
 
+# for the py script
+install(PROGRAMS
+  scripts/simple_camera_publisher.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # In order to let ros2 find the folders
 install( 
   DIRECTORY include src
   DESTINATION share/${PROJECT_NAME}
 )
-
 
 # In order to link some needed libraries into this package
 # target_link_libraries(pointcloud_handler_node
@@ -86,45 +91,6 @@ if(BUILD_TESTING)
 endif()
 
 ament_package()
-
-
-
-
-
-# # Build the library from the .cpp file
-# add_library(sensing_utils_lib
-#   src/sensor_quick_check.cpp
-# )
-
-# ament_target_dependencies(sensing_utils_lib
-#   rclcpp
-#   sensor_msgs
-# )
-
-# target_include_directories(sensing_utils_lib PUBLIC
-#   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-#   $<INSTALL_INTERFACE:include>
-# )
-
-# # Install library and headers
-# install(TARGETS sensing_utils_lib
-#   EXPORT sensing_utils_export
-#   ARCHIVE DESTINATION lib
-#   LIBRARY DESTINATION lib
-#   RUNTIME DESTINATION bin
-# )
-
-# install(
-#   DIRECTORY include/
-#   DESTINATION include
-# )
-
-# # Export targets and dependencies for downstream packages
-# ament_export_targets(sensing_utils_export HAS_LIBRARY_TARGET)
-# ament_export_include_directories(include)
-# ament_export_dependencies(rclcpp sensor_msgs)
-
-# ament_package()
 
 
 
