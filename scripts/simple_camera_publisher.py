@@ -95,7 +95,7 @@ def main(args=None):
     node = None
 
     try:
-        node = WebcamPublisher(device_index=0, publish_hz=30.0)
+        node = WebcamPublisher(device_index=2, publish_hz=30.0)
         rclpy.spin(node)
     except Exception as e:
         print(f"Errore: {e}", file=sys.stderr)

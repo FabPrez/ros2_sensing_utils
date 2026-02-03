@@ -13,6 +13,7 @@ def generate_launch_description():
             executable='logitec_c270_publisher.py',
             name='logitec_publisher',
             output='screen',
+            # remappings=[('py_template_topic', 'altro_topic')],  # se vuoi remapping
             # prefix=python_bin
         )
     ])
