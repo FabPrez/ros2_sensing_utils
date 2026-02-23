@@ -8,17 +8,47 @@ from cv_bridge import CvBridge
 import cv2
 import time
 
+import os
+import contextlib
 
-# import subprocess, time, cv2
+@contextlib.contextmanager
+def suppress_stderr_fd():
+    """
+    Temporaneamente reindirizza il file descriptor 2 (stderr) su /dev/null.
+    Usalo SOLO attorno alle operazioni che generano i messaggi (es. VideoCapture.open()).
+    """
+    # apri /dev/null
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    # duplica fd stderr corrente per poter restaurare dopo
+    old_stderr_fd = os.dup(2)
+    try:
+        # reindirizza stderr -> /dev/null
+        os.dup2(devnull, 2)
+        yield
+    finally:
+        # ripristina stderr originale
+        os.dup2(old_stderr_fd, 2)
+        os.close(old_stderr_fd)
+        os.close(devnull)
 
-# subprocess.run(['v4l2-ctl', '-d', '/dev/video0', '--set-fmt-video=width=1280,height=720,pixelformat=MJPG'])
-# subprocess.run(['v4l2-ctl', '-d', '/dev/video0', '--set-parm=30'])
 class WebcamPublisher(Node):
-    def __init__(self, device_index: int = 0, publish_hz: float = 10.0):
+    def __init__(self, device_index: int = None, publish_hz: float = None):
         super().__init__('webcam_publisher')
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_ERROR)
+        
+
+        # dichiara parametri: se costruttore fornisce valori usali come default
+        default_device = int(device_index) if device_index is not None else 0
+        default_hz = float(publish_hz) if publish_hz is not None else 10.0
+
+        self.declare_parameter('device_index', default_device)
+        self.declare_parameter('publish_hz', default_hz)
+
+        # leggi i parametri effettivi
+        self.device_index = int(self.get_parameter('device_index').value)
+        self.publish_hz = float(self.get_parameter('publish_hz').value)
 
         self.bridge = CvBridge()
-        self.device_index = device_index
 
         self.pub = self.create_publisher(
             Image,
@@ -26,46 +56,26 @@ class WebcamPublisher(Node):
             qos_profile_sensor_data
         )
 
-        # self.cap = cv2.VideoCapture(self.device_index)
+        # apri la camera
+        
         self.cap = cv2.VideoCapture(self.device_index, cv2.CAP_V4L2)
-        
-        if not self.cap.isOpened():
-            self.get_logger().error(
-                f"Impossibile aprire la webcam (indice {self.device_index})."
-            )
-            raise RuntimeError("Camera not opened")
-        
-        # 1. forza formato (fondamentale)
-        # self.cap.set(
-        #     cv2.CAP_PROP_FOURCC,
-        #     cv2.VideoWriter_fourcc(*'MJPG')
-        # )
 
-        # 2. forza risoluzione
-        # self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        # self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-        # 3. (best effort) fps
+        # best-effort settaggi (alcuni driver stampano messaggi qui)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-
-        # Riduci buffering
-        # self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        # (best effort) FPS
         self.cap.set(cv2.CAP_PROP_FPS, 30)
 
-        period = 1.0 / publish_hz if publish_hz > 0 else 0.1
+        period = 1.0 / self.publish_hz if self.publish_hz > 0 else 0.1
         self.timer = self.create_timer(period, self.timer_callback)
 
         self.get_logger().info(
-            f"WebcamPublisher avviato: device={self.device_index} @ {publish_hz}Hz"
+            f"WebcamPublisher avviato: device={self.device_index} @ {self.publish_hz}Hz"
         )
 
     def timer_callback(self):
-        ret, frame = self.cap.read()
+        with suppress_stderr_fd():
+            ret, frame = self.cap.read()
         if not ret:
             self.get_logger().warning("Frame non letto dalla camera.")
             return
@@ -95,7 +105,8 @@ def main(args=None):
     node = None
 
     try:
-        node = WebcamPublisher(device_index=0, publish_hz=30.0)
+        # NOTE: qui non passiamo device_index/publish_hz: saranno presi dai parametri di runtime
+        node = WebcamPublisher()
         rclpy.spin(node)
     except Exception as e:
         print(f"Errore: {e}", file=sys.stderr)

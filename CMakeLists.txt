@@ -50,6 +50,8 @@ install(TARGETS ${library_name}
 install(PROGRAMS
   scripts/simple_camera_publisher.py
   scripts/logitec_c270_publisher.py
+  scripts/charuco_intrinsic_calibrator.py
+  scripts/tracking_fingers.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
