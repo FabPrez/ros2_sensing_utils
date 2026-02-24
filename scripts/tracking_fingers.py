@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-Minimal node outputs (as requested):
-- Publish ONLY:
-  1) /output/pose        (geometry_msgs/PoseStamped)  -> pose of ONE chosen marker (id0 or id1) in camera frame
-  2) /fingers/is_open    (std_msgs/Bool)
-  3) /fingers/state      (std_msgs/String) -> "OPEN" / "CLOSED"
-  4) /fingers/aperture   (std_msgs/Float32) -> mapped scalar for robot (0 closed, 1 open, or continuous)
-
+Publishes ONLY:
+  1) /hand/pose             (geometry_msgs/PoseStamped)  -> pose of ONE chosen marker (id0 or id1) in camera frame
+  2) /hand/fingers_position (sensor_msgs/JointState)     -> position[0] = aperture in [0..1]
 OPTIONAL:
-- If ROS param enable_gui:=True -> OpenCV window with debug overlay.
+  - enable_gui:=True -> OpenCV window with debug overlay.
 """
 
 import os
+import time
 import yaml
 import cv2
 import numpy as np
@@ -20,20 +17,18 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, JointState
 from cv_bridge import CvBridge
 
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from tf2_ros import TransformBroadcaster
-
-from std_msgs.msg import Bool, String, Float32
 
 
 # ============================================================
 # ================== NON-ROS CONFIG (EDIT) ===================
 # ============================================================
 
-# Choose which marker pose to output on /output/pose
+# Choose which marker pose to output on /hand/pose
 POSE_OUTPUT_MARKER_ID = 0  # 0 or 1
 
 # -------- Basic filters (lightweight) --------
@@ -64,7 +59,6 @@ OUTPUT_MIN = 0.0
 OUTPUT_MAX = 1.0
 
 USE_CONTINUOUS_APERTURE = True
-# theese are for the robot do not need now
 DIST_CLOSED = 0.140   # meters
 DIST_OPEN = 0.180     # meters
 
@@ -142,7 +136,7 @@ def rmat_to_quat(R: np.ndarray) -> np.ndarray:
 
 class MinimalTwoAruco(Node):
     def __init__(self):
-        super().__init__("minimal_two_aruco_output")
+        super().__init__("aruco_hand_pose_and_fingers")
 
         # -------------------------
         # ROS params (I/O only)
@@ -158,9 +152,14 @@ class MinimalTwoAruco(Node):
         self.declare_parameter("publish_tf", True)
         self.declare_parameter("log_throttle_sec", 1.0)
 
-        # NEW: GUI debug switch
+        # GUI debug switch
         self.declare_parameter("enable_gui", True)
-        self.declare_parameter("gui_rate_hz", 10.0)  # limit refresh to save CPU (e.g. 5-10 Hz)
+        self.declare_parameter("gui_rate_hz", 10.0)
+
+        # Outputs topics
+        self.declare_parameter("pose_topic", "/hand/pose")
+        self.declare_parameter("fingers_topic", "/hand/fingers_position")
+        self.declare_parameter("fingers_joint_name", "gripper_aperture")
 
         # Read ROS params
         self.image_topic = self.get_parameter("image_topic").value
@@ -176,7 +175,11 @@ class MinimalTwoAruco(Node):
 
         self.enable_gui = bool(self.get_parameter("enable_gui").value)
         self.gui_rate_hz = float(self.get_parameter("gui_rate_hz").value)
-        self._last_gui_t = self.get_clock().now()
+        self._last_gui_t = 0.0  # wall clock timestamp (time.time())
+
+        self.pose_topic = self.get_parameter("pose_topic").value
+        self.fingers_topic = self.get_parameter("fingers_topic").value
+        self.fingers_joint_name = self.get_parameter("fingers_joint_name").value
 
         # Intrinsics
         self.K, self.D = self._load_camera_yaml(self.camera_yaml)
@@ -204,26 +207,38 @@ class MinimalTwoAruco(Node):
         self._open_votes = 0
         self._close_votes = 0
         self._last_dist = None
+        self._last_aperture = None  # last numeric aperture [0..1]
 
         # ROS I/O
         self.bridge = CvBridge()
         self.sub = self.create_subscription(Image, self.image_topic, self.on_image, qos_profile_sensor_data)
 
-        # Outputs (ONLY these)
-        self.pub_pose = self.create_publisher(PoseStamped, "/output/pose", 10)
-        self.pub_is_open = self.create_publisher(Bool, "/fingers/is_open", 10)
-        self.pub_state = self.create_publisher(String, "/fingers/state", 10)
-        self.pub_aperture = self.create_publisher(Float32, "/fingers/aperture", 10)
+        # Outputs
+        self.pub_pose = self.create_publisher(PoseStamped, self.pose_topic, 10)
+        self.pub_fingers = self.create_publisher(JointState, self.fingers_topic, 10)
 
-        # TF (so you can still see frames in RViz)
+        # TF
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.get_logger().info(
-            "MinimalTwoAruco started\n"
-            f"  /output/pose is marker id={POSE_OUTPUT_MARKER_ID}\n"
-            "  Fingers: /fingers/is_open, /fingers/state, /fingers/aperture\n"
+            "Aruco hand node started\n"
+            f"  topic  -> {self.image_topic}\n"
+            f"  pose   -> {self.pose_topic} (marker id={POSE_OUTPUT_MARKER_ID})\n"
+            f"  fingers-> {self.fingers_topic} (JointState.position[0] in [0..1])\n"
             f"  enable_gui={self.enable_gui} (gui_rate_hz={self.gui_rate_hz})"
         )
+
+        # Watchdog: avvisa se la camera non manda messaggi
+        self._received_first_image = False
+        self._watchdog_timer = self.create_timer(5.0, self._camera_watchdog)
+
+    def _camera_watchdog(self):
+        """Chiamato ogni 5 s. Avvisa se non arrivano messaggi dalla camera."""
+        if not self._received_first_image:
+            self.get_logger().warn(
+                f"[WATCHDOG] Nessun messaggio ricevuto su '{self.image_topic}'.\n"
+                f"           Assicurati che la camera sia attiva e che il topic sia corretto."
+            )
 
     def _make_dictionary(self, name: str):
         mapping = {
@@ -232,6 +247,8 @@ class MinimalTwoAruco(Node):
             "DICT_4X4_250": cv2.aruco.DICT_4X4_250,
             "DICT_4X4_1000": cv2.aruco.DICT_4X4_1000,
             "DICT_5X5_50": cv2.aruco.DICT_5X5_50,
+            "DICT_5X5_100": cv2.aruco.DICT_5X5_100,
+            "DICT_5X5_250": cv2.aruco.DICT_5X5_250,
             "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
             "DICT_ARUCO_ORIGINAL": cv2.aruco.DICT_ARUCO_ORIGINAL,
         }
@@ -291,10 +308,6 @@ class MinimalTwoAruco(Node):
         self.tf_broadcaster.sendTransform(tfm)
 
     def _estimate_pose(self, imgp_4x2: np.ndarray, use_dist: bool):
-        """
-        Returns:
-          rvec (3,), tvec (3,), q (4,), err (float or None)
-        """
         objp = self._object_points_marker()
         imgp = imgp_4x2.reshape(4, 2).astype(np.float64)
         dist = self.D if use_dist else None
@@ -411,12 +424,22 @@ class MinimalTwoAruco(Node):
             return False
         if self.gui_rate_hz <= 0:
             return True
-        now = self.get_clock().now()
-        dt = (now - self._last_gui_t).nanoseconds * 1e-9
+        # Usa wall clock (time.time()) per evitare problemi col clock ROS all'avvio
+        now = time.time()
+        dt = now - self._last_gui_t
         if dt >= (1.0 / self.gui_rate_hz):
             self._last_gui_t = now
             return True
         return False
+
+    def _publish_fingers_jointstate(self, stamp, aperture: float):
+        js = JointState()
+        js.header.stamp = stamp
+        # frame_id non strettamente necessario, ma puoi metterlo se vuoi
+        # js.header.frame_id = self.camera_frame
+        js.name = [self.fingers_joint_name]
+        js.position = [float(clamp(aperture, 0.0, 1.0))]
+        self.pub_fingers.publish(js)
 
     def on_image(self, msg: Image):
         frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -434,7 +457,6 @@ class MinimalTwoAruco(Node):
         got = {}   # id -> (t_raw, q_raw, err)
         filt = {}  # id -> (t_f, q_f)
 
-        # debug image only if needed
         draw_gui = self._should_draw_gui_now()
         debug = frame.copy() if draw_gui else None
 
@@ -455,20 +477,17 @@ class MinimalTwoAruco(Node):
                 if tvec is None:
                     continue
 
-                # store raw (for GUI axes)
                 self.raw_rvec[mid] = rvec
                 self.raw_tvec[mid] = tvec
                 self.raw_err[mid] = err
 
                 got[mid] = (tvec, q, err)
 
-                # filter pose (for publishing + TF)
                 self._update_filtered(mid, tvec, q)
                 filt[mid] = (self.filt_t[mid], self.filt_q[mid])
 
                 self._publish_tf(self.camera_frame, f"aruco_{mid}", self.filt_t[mid], self.filt_q[mid], msg.header.stamp)
 
-                # GUI axes
                 if draw_gui:
                     dist_for_axes = None if not use_dist_in_pnp else self.D
                     cv2.drawFrameAxes(debug, self.K, dist_for_axes, rvec.reshape(3, 1), tvec.reshape(3, 1), self.marker_length * 0.5)
@@ -480,7 +499,7 @@ class MinimalTwoAruco(Node):
                     cv2.putText(debug, s, (px, max(20, py - 10)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
-        # Fingers update (needs both markers)
+        # Fingers update (needs both markers 0 and 1)
         if (0 in got) and (1 in got) and (0 in filt) and (1 in filt):
             t0 = filt[0][0]
             t1 = filt[1][0]
@@ -490,32 +509,39 @@ class MinimalTwoAruco(Node):
             state, dist_val = self._fingers_update(t0, t1, err0, err1)
             if state is not None:
                 self._last_dist = dist_val
-                aperture = self._map_aperture(state, dist_val)
+                self._last_aperture = self._map_aperture(state, dist_val)
 
-                self.pub_is_open.publish(Bool(data=(state == "OPEN")))
-                self.pub_state.publish(String(data=state))
-                self.pub_aperture.publish(Float32(data=float(aperture)))
+                # Publish fingers as JointState on /hand/fingers_position
+                self._publish_fingers_jointstate(msg.header.stamp, self._last_aperture)
 
                 self.get_logger().info(
-                    f"FINGERS: {state}  dist={dist_val:.4f}m  aperture={aperture:.3f}",
+                    f"FINGERS: {state} dist={dist_val:.4f}m aperture={self._last_aperture:.3f}",
                     throttle_duration_sec=self.log_throttle_sec
                 )
 
                 if draw_gui:
                     cv2.putText(debug,
-                                f"FINGERS: {state}  dist={dist_val:.3f}m  ap={aperture:.2f}",
+                                f"FINGERS: {state} dist={dist_val:.3f}m ap={self._last_aperture:.2f}",
                                 (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
 
-        # Publish ONLY chosen marker pose
+        # Publish pose of selected marker on /hand/pose
         out_id = int(POSE_OUTPUT_MARKER_ID)
         if out_id in filt:
             t, q = filt[out_id]
             self.pub_pose.publish(self._pose_to_msg(t, q, msg.header.stamp, self.camera_frame))
 
-        # GUI window
-        if draw_gui:
-            cv2.imshow("aruco_two_markers_debug", debug)
+        # GUI window (solo se enable_gui e rate lo permette)
+        if draw_gui and debug is not None:
+            cv2.imshow("aruco_debug", debug)
             cv2.waitKey(1)
+
+        # Prima immagine ricevuta: disattiva watchdog
+        if not self._received_first_image:
+            self._received_first_image = True
+            self._watchdog_timer.cancel()
+            self.get_logger().info(
+                f"[OK] Prima immagine ricevuta da '{self.image_topic}' — tracking attivo."
+            )
 
 
 def main():

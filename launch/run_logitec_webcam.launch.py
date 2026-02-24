@@ -8,7 +8,7 @@ def generate_launch_description():
     # Declare launch args
     device_arg = DeclareLaunchArgument(
         'device_index',
-        default_value='0',
+        default_value='2',
         description='Camera device index (es. 0, 1, ... or Linux /dev path index mapping)'
     )
     hz_arg = DeclareLaunchArgument(
