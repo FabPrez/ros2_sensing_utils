@@ -29,7 +29,7 @@ from tf2_ros import TransformBroadcaster
 # ============================================================
 
 # Choose which marker pose to output on /hand/pose
-POSE_OUTPUT_MARKER_ID = 0  # 0 or 1
+POSE_OUTPUT_MARKER_ID = 1  # 0 or 1
 
 # -------- Basic filters (lightweight) --------
 USE_UNDISTORT_FOR_DETECTION = True
@@ -39,17 +39,17 @@ USE_REPROJECTION_OUTLIER_REJECTION = True
 REPROJ_ERR_THRESH_PX = 2.5
 
 # Light smoothing (optional). Keep small alpha to avoid lag.
-USE_TVEC_EMA_FILTER = True
+USE_TVEC_EMA_FILTER = False
 EMA_ALPHA_TVEC = 0.12   # @20Hz: 0.10..0.18
 
-USE_QUAT_SLERP_FILTER = True
+USE_QUAT_SLERP_FILTER = False
 ALPHA_ROT = 0.12        # @20Hz: 0.10..0.18
 
 # -------- Robust fingers detection (anti false positives) --------
 FINGERS_METRIC = "3D"   # "3D" or "X"
 FINGERS_OPEN_THRESH = 0.178
 FINGERS_CLOSE_THRESH = 0.170  # must be < open
-FINGERS_REQUIRED_CONSECUTIVE = 2
+FINGERS_REQUIRED_CONSECUTIVE = 1
 
 FINGERS_REQUIRE_LOW_REPROJ_ERR = True
 FINGERS_MAX_REPROJ_ERR_PX = 2.5
@@ -432,13 +432,13 @@ class MinimalTwoAruco(Node):
             return True
         return False
 
-    def _publish_fingers_jointstate(self, stamp, aperture: float):
+    def _publish_fingers_jointstate(self, stamp, raw_dist: float):
         js = JointState()
         js.header.stamp = stamp
         # frame_id non strettamente necessario, ma puoi metterlo se vuoi
         # js.header.frame_id = self.camera_frame
         js.name = [self.fingers_joint_name]
-        js.position = [float(clamp(aperture, 0.0, 1.0))]
+        js.position = [float(raw_dist)]
         self.pub_fingers.publish(js)
 
     def on_image(self, msg: Image):
@@ -509,7 +509,7 @@ class MinimalTwoAruco(Node):
             state, dist_val = self._fingers_update(t0, t1, err0, err1)
             if state is not None:
                 self._last_dist = dist_val
-                self._last_aperture = self._map_aperture(state, dist_val)
+                self._last_aperture = dist_val
 
                 # Publish fingers as JointState on /hand/fingers_position
                 self._publish_fingers_jointstate(msg.header.stamp, self._last_aperture)
@@ -523,12 +523,20 @@ class MinimalTwoAruco(Node):
                     cv2.putText(debug,
                                 f"FINGERS: {state} dist={dist_val:.3f}m ap={self._last_aperture:.2f}",
                                 (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2, cv2.LINE_AA)
+            else:
+                self._publish_fingers_jointstate(msg.header.stamp, float('nan'))
+        else:
+            self._publish_fingers_jointstate(msg.header.stamp, float('nan'))
 
         # Publish pose of selected marker on /hand/pose
         out_id = int(POSE_OUTPUT_MARKER_ID)
         if out_id in filt:
             t, q = filt[out_id]
             self.pub_pose.publish(self._pose_to_msg(t, q, msg.header.stamp, self.camera_frame))
+        else:
+            t_nan = np.array([np.nan, np.nan, np.nan])
+            q_nan = np.array([np.nan, np.nan, np.nan, np.nan])
+            self.pub_pose.publish(self._pose_to_msg(t_nan, q_nan, msg.header.stamp, self.camera_frame))
 
         # GUI window (solo se enable_gui e rate lo permette)
         if draw_gui and debug is not None:
