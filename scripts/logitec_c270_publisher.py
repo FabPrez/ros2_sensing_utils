@@ -66,12 +66,29 @@ class WebcamPublisher(Node):
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
 
+        # ---- Finestra di Preview Iniziale (3 secondi) ----
+        self.get_logger().info(f"WebcamPublisher avviato: preview in corso per il device={self.device_index} (3s)...")
+        start_time = time.time()
+        while time.time() - start_time < 5.0:
+            ret, frame = self.cap.read()
+            if ret:
+                # Mostra anteprima con testo info
+                preview = frame.copy()
+                cv2.putText(preview, f"Anteprima Device Index: {self.device_index}", (20, 40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                cv2.imshow(f"Webcam Preview (Chiude in automatico)", preview)
+                cv2.waitKey(30)
+                
+        try:
+            cv2.destroyWindow(f"Webcam Preview (Chiude in automatico)")
+        except Exception:
+            pass
+        # ---------------------------------------------------
+
         period = 1.0 / self.publish_hz if self.publish_hz > 0 else 0.1
         self.timer = self.create_timer(period, self.timer_callback)
 
-        self.get_logger().info(
-            f"WebcamPublisher avviato: device={self.device_index} @ {self.publish_hz}Hz"
-        )
+        self.get_logger().info(f"Preview completata. Pubblicazione su topic a {self.publish_hz}Hz.")
 
     def timer_callback(self):
         with suppress_stderr_fd():

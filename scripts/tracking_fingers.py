@@ -62,6 +62,9 @@ USE_CONTINUOUS_APERTURE = True
 DIST_CLOSED = 0.140   # meters
 DIST_OPEN = 0.180     # meters
 
+# Rotation to align camera frame with robot
+ROTATE_CAMERA_Z_90 = True
+
 # ============================================================
 
 
@@ -320,7 +323,7 @@ class MinimalTwoAruco(Node):
             flags=cv2.SOLVEPNP_IPPE_SQUARE
         )
         if not ok:
-            return None, None, None, None
+            return None, None, None, None, None
 
         rvec = rvec.reshape(3)
         tvec = tvec.reshape(3)
@@ -334,16 +337,30 @@ class MinimalTwoAruco(Node):
                 pass
 
         R, _ = cv2.Rodrigues(rvec.reshape(3, 1))
-        q = rmat_to_quat(R)
+        
+        if ROTATE_CAMERA_Z_90:
+            # Rotate +90 around Z: X_new = Y_old, Y_new = -X_old, Z_new = Z_old
+            R_cam_rot = np.array([
+                [ 0.0,  1.0, 0.0],
+                [-1.0,  0.0, 0.0],
+                [ 0.0,  0.0, 1.0]
+            ], dtype=np.float64)
+            tvec_out = R_cam_rot @ tvec
+            R_out = R_cam_rot @ R
+        else:
+            tvec_out = tvec.copy()
+            R_out = R
+            
+        q_out = rmat_to_quat(R_out)
 
         if USE_REPROJECTION_OUTLIER_REJECTION:
             err = self._reproj_error_px(objp, imgp, rvec, tvec, self.K, dist)
             if err > REPROJ_ERR_THRESH_PX:
-                return None, None, None, None
+                return None, None, None, None, None
         else:
             err = None
 
-        return rvec, tvec, q, err
+        return rvec, tvec, tvec_out, q_out, err
 
     def _update_filtered(self, marker_id: int, t_raw: np.ndarray, q_raw: np.ndarray):
         if marker_id not in self.filt_t:
@@ -473,7 +490,7 @@ class MinimalTwoAruco(Node):
 
                 imgp = np.array(corners_list[i]).reshape(4, 2)
 
-                rvec, tvec, q, err = self._estimate_pose(imgp, use_dist=use_dist_in_pnp)
+                rvec, tvec, tvec_out, q_out, err = self._estimate_pose(imgp, use_dist=use_dist_in_pnp)
                 if tvec is None:
                     continue
 
@@ -481,9 +498,9 @@ class MinimalTwoAruco(Node):
                 self.raw_tvec[mid] = tvec
                 self.raw_err[mid] = err
 
-                got[mid] = (tvec, q, err)
+                got[mid] = (tvec_out, q_out, err)
 
-                self._update_filtered(mid, tvec, q)
+                self._update_filtered(mid, tvec_out, q_out)
                 filt[mid] = (self.filt_t[mid], self.filt_q[mid])
 
                 self._publish_tf(self.camera_frame, f"aruco_{mid}", self.filt_t[mid], self.filt_q[mid], msg.header.stamp)
@@ -493,7 +510,7 @@ class MinimalTwoAruco(Node):
                     cv2.drawFrameAxes(debug, self.K, dist_for_axes, rvec.reshape(3, 1), tvec.reshape(3, 1), self.marker_length * 0.5)
 
                     px, py = int(imgp[0, 0]), int(imgp[0, 1])
-                    s = f"id {mid}  z={float(tvec[2]):.3f}m"
+                    s = f"id {mid}  x={float(tvec_out[0]):.3f}m y={float(tvec_out[1]):.3f}m z={float(tvec_out[2]):.3f}m"
                     if err is not None:
                         s += f" err={err:.2f}px"
                     cv2.putText(debug, s, (px, max(20, py - 10)),
