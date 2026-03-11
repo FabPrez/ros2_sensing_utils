@@ -62,8 +62,8 @@ USE_CONTINUOUS_APERTURE = True
 DIST_CLOSED = 0.140   # meters
 DIST_OPEN = 0.180     # meters
 
-# Rotation to align camera frame with robot
-ROTATE_CAMERA_Z_90 = True
+# Rotation to align camera frame with robot: 0, 90, -90 degrees around Z
+CAMERA_Z_ROTATION = 90
 
 # ============================================================
 
@@ -338,13 +338,16 @@ class MinimalTwoAruco(Node):
 
         R, _ = cv2.Rodrigues(rvec.reshape(3, 1))
         
-        if ROTATE_CAMERA_Z_90:
-            # Rotate +90 around Z: X_new = Y_old, Y_new = -X_old, Z_new = Z_old
+        if CAMERA_Z_ROTATION != 0:
+            angle_rad = np.radians(CAMERA_Z_ROTATION)
+            c, s = np.cos(angle_rad), np.sin(angle_rad)
+            # Standard 2D rotation matrix around Z
             R_cam_rot = np.array([
-                [ 0.0,  1.0, 0.0],
-                [-1.0,  0.0, 0.0],
-                [ 0.0,  0.0, 1.0]
+                [ c, -s, 0.0],
+                [ s,  c, 0.0],
+                [ 0.0, 0.0, 1.0]
             ], dtype=np.float64)
+            
             tvec_out = R_cam_rot @ tvec
             R_out = R_cam_rot @ R
         else:
